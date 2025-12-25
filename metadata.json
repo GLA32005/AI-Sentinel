@@ -1,0 +1,7 @@
+{
+  "name": "AI哨兵：自主安全智能体",
+  "description": "一个基于 OODA 循环架构，主动巡检、探测和分析企业网络风险的自主 AI 安全系统。",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
