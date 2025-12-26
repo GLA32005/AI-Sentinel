@@ -1,24 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  Agent, 
-  AgentStatus, 
-  LogEntry, 
-  NetworkGraphData, 
-  Vulnerability, 
-  AgentRole,
-  AppConfig,
-  StrategicInsight
-} from './types';
-import { INITIAL_AGENTS, INITIAL_NETWORK_DATA } from './constants';
-import { simulateAgentStep, testModelConnection } from './services/geminiService';
+import React, { useState, useEffect, useRef } from 'react';
 import NetworkGraph from './components/NetworkGraph';
 import Terminal from './components/Terminal';
 import AgentCard from './components/AgentCard';
 import IntelligencePanel from './components/IntelligencePanel';
 import VoiceCommander from './components/VoiceCommander';
+import VulnerabilityModal from './components/VulnerabilityModal';
+import { simulateAgentStep, testModelConnection } from './services/geminiService';
+import { INITIAL_AGENTS, INITIAL_NETWORK_DATA } from './constants';
+import { 
+  AppConfig, 
+  Agent, 
+  LogEntry, 
+  NetworkGraphData, 
+  Vulnerability, 
+  StrategicInsight, 
+  AgentRole,
+  AgentStatus
+} from './types';
 
+// Increased interval to 10000ms to avoid hitting Gemini Free Tier rate limits (RPM)
 const DEFAULT_CONFIG: AppConfig = {
-  interval: 8000, // Default to 8s to be safer with rate limits
+  interval: 10000, 
   model: 'gemini-3-flash-preview',
   targetNetwork: '192.168.1.0/24',
   apiEndpoint: '',
@@ -26,363 +28,475 @@ const DEFAULT_CONFIG: AppConfig = {
 };
 
 const PRESET_MODELS = [
-  { value: 'gemini-3-flash-preview', label: 'Gemini 3.0 Flash (Fast)' },
-  { value: 'gemini-3-pro-preview', label: 'Gemini 3.0 Pro (Thinking)' },
-  { value: 'gemini-2.0-flash-exp', label: 'Gemini 2.0 Flash (Experimental)' },
-  { value: 'gemini-2.0-pro-exp', label: 'Gemini 2.0 Pro (Experimental)' },
+  { value: 'gemini-3-flash-preview', label: 'gemini-3-flash-preview (Speed)' },
+  { value: 'gemini-3-pro-preview', label: 'gemini-3-pro-preview (Reasoning)' }
 ];
 
-const App: React.FC = () => {
+export default function App() {
+  const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
+  const [showConfig, setShowConfig] = useState(false);
+  
+  // Config Modal State
+  const [tempConfig, setTempConfig] = useState<AppConfig>(DEFAULT_CONFIG);
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+
+  // Simulation State
+  const [isRunning, setIsRunning] = useState(false);
+  const [cycleCount, setCycleCount] = useState(0);
   const [agents, setAgents] = useState<Agent[]>(INITIAL_AGENTS);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [networkData, setNetworkData] = useState<NetworkGraphData>(INITIAL_NETWORK_DATA);
   const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
-  const [isPatrolling, setIsPatrolling] = useState(false);
-  const [cycleCount, setCycleCount] = useState(0);
-  
-  // Configuration State - Load from LocalStorage if available
-  const [config, setConfig] = useState<AppConfig>(() => {
-    try {
-      const saved = localStorage.getItem('gla3_config');
-      return saved ? JSON.parse(saved) : DEFAULT_CONFIG;
-    } catch (e) {
-      return DEFAULT_CONFIG;
-    }
-  });
-
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [tempConfig, setTempConfig] = useState<AppConfig>(config);
-  const [isCustomModel, setIsCustomModel] = useState(false);
-  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
-
-  // Vulnerability Modal State
-  const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
-
-  // Strategic Insight State
   const [latestInsight, setLatestInsight] = useState<StrategicInsight | null>(null);
   
-  // Remediation State
+  // UI Interaction State
+  const [selectedVulnerability, setSelectedVulnerability] = useState<Vulnerability | null>(null);
   const [isRemediating, setIsRemediating] = useState(false);
 
-  // Persist Config Effect
+  // Stats for Status Bar
+  const errorCount = logs.filter(l => l.type === 'danger').length;
+  const warningCount = logs.filter(l => l.type === 'warning').length;
+
+  // Initialize temp config
   useEffect(() => {
-    localStorage.setItem('gla3_config', JSON.stringify(config));
-  }, [config]);
+    if (showConfig) setTempConfig(config);
+  }, [showConfig, config]);
 
-  // Helper to add logs
-  const addLog = (log: LogEntry) => {
-    setLogs(prev => [...prev, log]);
-  };
+  // Simulation Loop
+  useEffect(() => {
+    let timer: any;
+    if (isRunning) {
+      timer = setInterval(async () => {
+        try {
+          // Update Active Agent Status
+          const phase = cycleCount % 4;
+          const roleMap = [AgentRole.SCOUT, AgentRole.ANALYST, AgentRole.COMMANDER, AgentRole.SNIPER];
+          const activeRole = roleMap[phase];
 
-  // Helper to update specific agent
-  const updateAgentStatus = (role: AgentRole, status: AgentStatus, task: string) => {
-    setAgents(prev => prev.map(a => 
-      a.role === role ? { ...a, status, currentTask: task } : a
-    ));
-  };
+          setAgents(prev => prev.map(a => ({
+            ...a,
+            status: a.role === activeRole ? AgentStatus.THINKING : AgentStatus.IDLE
+          })));
 
-  // Remediation Logic
-  const handleExecuteRemediation = useCallback(() => {
-    if (isRemediating) return;
-    setIsRemediating(true);
+          // Call Gemini
+          const knownAssets = networkData.nodes.map(n => `${n.label} (${n.ip})`);
+          const result = await simulateAgentStep(cycleCount, knownAssets, config);
 
-    addLog({
-        id: Date.now().toString(),
-        timestamp: new Date().toLocaleTimeString(),
-        agentRole: AgentRole.COMMANDER,
-        message: "收到处置指令。正在初始化修复协议...",
-        type: 'warning'
-    });
+          // Update State based on result
+          if (result.logs) {
+            setLogs(prev => [...prev.slice(-50), ...result.logs]);
+            
+            // Update Agent logs/task
+            const lastLog = result.logs[result.logs.length - 1];
+            setAgents(prev => prev.map(a => {
+               if (a.role === lastLog.agentRole) {
+                   return { 
+                       ...a, 
+                       logs: [...a.logs.slice(-4), lastLog.message],
+                       status: AgentStatus.ACTING,
+                       currentTask: lastLog.message.slice(0, 30) + '...'
+                   };
+               }
+               return a;
+            }));
+          }
 
-    updateAgentStatus(AgentRole.SNIPER, AgentStatus.REMEDIATING, "执行补丁部署...");
+          if (result.newAssets) {
+             setNetworkData(prev => {
+                 const newNodes = result.newAssets!.map((asset, i) => ({
+                     id: `new-${Date.now()}-${i}`,
+                     group: 4,
+                     label: asset.label,
+                     ip: asset.ip,
+                     status: 'unknown' as const,
+                     riskScore: 50
+                 }));
+                 // Link to gateway
+                 const newLinks = newNodes.map(n => ({
+                     source: 'gateway',
+                     target: n.id,
+                     value: 1
+                 }));
+                 return {
+                     nodes: [...prev.nodes, ...newNodes],
+                     links: [...prev.links, ...newLinks]
+                 };
+             });
+          }
 
-    // Simulate delay
-    setTimeout(() => {
-        setNetworkData(prev => {
-            const newNodes = prev.nodes.map(n => 
-                n.status === 'vulnerable' || n.status === 'compromised' 
-                ? { ...n, status: 'secure' as const, riskScore: 0 } 
-                : n
-            );
-            return { ...prev, nodes: newNodes };
-        });
+          if (result.vulnerability) {
+              setVulnerabilities(prev => [...prev, result.vulnerability!]);
+              // Mark random node as vulnerable for visual effect
+              setNetworkData(prev => ({
+                  ...prev,
+                  nodes: prev.nodes.map(n => n.id === 'web-prod' ? { ...n, status: 'vulnerable', riskScore: 80 } : n)
+              }));
+          }
 
-        setVulnerabilities([]);
-        setLatestInsight(null);
-        setIsRemediating(false);
-        updateAgentStatus(AgentRole.SNIPER, AgentStatus.IDLE, "待命");
+          if (result.strategicInsight) {
+              setLatestInsight(result.strategicInsight);
+          }
 
-        addLog({
-            id: Date.now().toString(),
-            timestamp: new Date().toLocaleTimeString(),
-            agentRole: AgentRole.SNIPER,
-            message: "威胁已消除。系统完整性已恢复 (100%)。",
-            type: 'success'
-        });
+          if (result.shouldStop) {
+              setIsRunning(false);
+          }
 
-    }, 3000);
-  }, [isRemediating]);
+          setCycleCount(c => c + 1);
 
-
-  // The Simulation Loop
-  const runSimulationStep = useCallback(async () => {
-    if (!isPatrolling || isRemediating) return; // Pause patrol during remediation
-
-    // 1. Determine active role based on cycle
-    const phase = cycleCount % 4;
-    const activeRole = [AgentRole.SCOUT, AgentRole.ANALYST, AgentRole.COMMANDER, AgentRole.SNIPER][phase];
-    
-    // Set active agent to Thinking/Acting
-    updateAgentStatus(activeRole, AgentStatus.THINKING, "正在查询神经模型...");
-
-    // 2. Call Gemini Service
-    const knownAssets = networkData.nodes.map(n => n.label);
-    const result = await simulateAgentStep(cycleCount, knownAssets, config);
-
-    // 3. Process Result
-    // Update logs
-    result.logs.forEach(log => addLog(log));
-
-    // Check if we need to emergency stop due to rate limits
-    if (result.shouldStop) {
-      setIsPatrolling(false);
-      updateAgentStatus(activeRole, AgentStatus.IDLE, "已暂停");
-      return;
-    }
-
-    // Update Network Map (if new asset found)
-    if (result.newAssets && result.newAssets.length > 0) {
-      const newNodes = result.newAssets.map((asset, idx) => ({
-        id: `new-${Date.now()}-${idx}`,
-        group: asset.type.toLowerCase().includes('db') ? 3 : 2,
-        label: asset.label,
-        ip: asset.ip,
-        status: 'unknown' as const,
-        riskScore: 0
-      }));
-
-      setNetworkData(prev => ({
-        nodes: [...prev.nodes, ...newNodes],
-        links: [...prev.links, { source: 'gateway', target: newNodes[0].id, value: 1 }]
-      }));
-    }
-
-    // Update Vulnerabilities (if found)
-    if (result.vulnerability) {
-      setVulnerabilities(prev => [...prev, result.vulnerability!]);
-      // Mark node as vulnerable visually (simplified logic: pick random or last added)
-      setNetworkData(prev => {
-        const nodes = [...prev.nodes];
-        if (nodes.length > 2) {
-            nodes[nodes.length - 1].status = 'vulnerable';
+        } catch (e) {
+            console.error(e);
+            setIsRunning(false);
         }
-        return { ...prev, nodes };
-      });
+      }, config.interval);
     }
-
-    // Update Strategic Insight (if found)
-    if (result.strategicInsight) {
-        setLatestInsight(result.strategicInsight);
-        // Also log a notification about it
-        addLog({
-            id: Date.now().toString(),
-            timestamp: new Date().toLocaleTimeString(),
-            agentRole: AgentRole.ANALYST,
-            message: `★ 生成新的战略情报: ${result.strategicInsight.title}`,
-            type: 'success'
-        });
-    }
-
-    // Reset Agent Status
-    updateAgentStatus(activeRole, AgentStatus.IDLE, "待命");
-    
-    // Increment cycle
-    setCycleCount(prev => prev + 1);
-
-  }, [isPatrolling, cycleCount, networkData, config, isRemediating]);
-
-  // Interval for the loop
-  useEffect(() => {
-    if (isPatrolling) {
-      const interval = setInterval(runSimulationStep, config.interval); 
-      return () => clearInterval(interval);
-    }
-  }, [isPatrolling, runSimulationStep, config.interval]);
-
-  const togglePatrol = () => {
-    const newState = !isPatrolling;
-    setIsPatrolling(newState);
-    if (newState) {
-      addLog({
-        id: Date.now().toString(),
-        timestamp: new Date().toLocaleTimeString(),
-        agentRole: AgentRole.COMMANDER,
-        message: "启动自主巡航序列。OODA 循环开始。",
-        type: 'warning'
-      });
-    } else {
-      addLog({
-        id: Date.now().toString(),
-        timestamp: new Date().toLocaleTimeString(),
-        agentRole: AgentRole.COMMANDER,
-        message: "巡航被手动挂起。",
-        type: 'info'
-      });
-      // Reset agents to idle
-      setAgents(prev => prev.map(a => ({...a, status: AgentStatus.IDLE, currentTask: '已挂起'})));
-    }
-  };
-
-  const openSettings = () => {
-    setTempConfig(config);
-    setTestStatus('idle'); // Reset test status
-    // Determine if current config is a custom model or a preset
-    const isPreset = PRESET_MODELS.some(m => m.value === config.model);
-    setIsCustomModel(!isPreset);
-    setIsSettingsOpen(true);
-  };
+    return () => clearInterval(timer);
+  }, [isRunning, cycleCount, config, networkData]);
 
   const handleTestConnection = async () => {
-    if (!tempConfig.model.trim()) return;
     setTestStatus('testing');
     const success = await testModelConnection(tempConfig);
     setTestStatus(success ? 'success' : 'error');
+    if (success) setTimeout(() => setTestStatus('idle'), 3000);
   };
 
-  const saveSettings = () => {
-    setConfig(tempConfig);
-    setIsSettingsOpen(false);
-    addLog({
-      id: Date.now().toString(),
-      timestamp: new Date().toLocaleTimeString(),
-      agentRole: AgentRole.COMMANDER,
-      message: `系统配置已更新: Model=${tempConfig.model}, Endpoint=${tempConfig.apiEndpoint || 'Default'}`,
-      type: 'success'
-    });
+  const saveConfig = () => {
+      setConfig(tempConfig);
+      setShowConfig(false);
   };
+
+  const handleRemediation = async () => {
+      if (!selectedVulnerability) return;
+
+      setIsRemediating(true);
+      
+      // Log initiation
+      setLogs(prev => [...prev, {
+          id: Date.now().toString(),
+          timestamp: new Date().toLocaleTimeString(),
+          agentRole: AgentRole.SNIPER,
+          message: `正在执行针对主机 ${selectedVulnerability.host} 的漏洞修复协议...`,
+          type: 'warning'
+      }]);
+
+      // Simulate remediation delay
+      await new Promise(r => setTimeout(r, 2000));
+      
+      // Remove specifically the selected vulnerability
+      setVulnerabilities(prev => {
+          const remaining = prev.filter(v => v.id !== selectedVulnerability.id);
+          
+          // If no vulnerabilities left, reset network visual status
+          if (remaining.length === 0) {
+             setLatestInsight(null);
+             setNetworkData(data => ({
+                ...data,
+                nodes: data.nodes.map(n => ({ 
+                    ...n, 
+                    status: n.status === 'vulnerable' || n.status === 'compromised' ? 'secure' : n.status, 
+                    riskScore: 10 
+                }))
+             }));
+          }
+          return remaining;
+      });
+
+      setLogs(prev => [...prev, {
+          id: Date.now().toString(),
+          timestamp: new Date().toLocaleTimeString(),
+          agentRole: AgentRole.SNIPER,
+          message: `漏洞 [${selectedVulnerability.name}] 已成功修复，系统恢复安全状态。`,
+          type: 'success'
+      }]);
+      
+      setIsRemediating(false);
+      setSelectedVulnerability(null);
+  };
+
+  const isPresetModel = (model: string) => PRESET_MODELS.some(p => p.value === model);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col font-sans selection:bg-neon-blue selection:text-white relative">
-      
-      {/* Voice Commander (Bottom Right) */}
-      <VoiceCommander 
-        apiKey={config.apiKey || process.env.API_KEY} 
-        vulnerabilities={vulnerabilities}
-        latestInsight={latestInsight}
-        onExecuteRemediation={handleExecuteRemediation}
-      />
+    <div className="flex flex-col h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden selection:bg-indigo-500/30">
+        {/* Header */}
+        <header className="h-14 border-b border-slate-800 bg-slate-950/50 backdrop-blur flex items-center justify-between px-6 shrink-0 z-10">
+            <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-indigo-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(99,102,241,0.5)]"></div>
+                    <h1 className="font-bold tracking-wider text-lg bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
+                        NEURAL SENTINEL <span className="text-slate-600 text-xs font-mono ml-2">v2.0.4</span>
+                    </h1>
+                </div>
+                {/* Target Info Removed */}
+            </div>
 
-      {/* Settings Modal */}
-      {isSettingsOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-2xl w-full max-w-md p-6 transform transition-all scale-100 flex flex-col max-h-[90vh]">
-             <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-2">
-               <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                 <svg className="w-5 h-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                 </svg>
-                 系统配置 (Configuration)
-               </h3>
-               <button onClick={() => setIsSettingsOpen(false)} className="text-slate-500 hover:text-white">
-                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                 </svg>
-               </button>
-             </div>
-
-             <div className="space-y-4 overflow-y-auto pr-2">
-               
-               {/* API Key Section */}
-               <div className="bg-slate-950/50 p-3 rounded border border-slate-800">
-                  <label className="block text-xs font-bold text-slate-400 uppercase mb-2 flex justify-between">
-                     <span>Google Gemini API Key</span>
-                     <span className="text-[10px] font-normal text-slate-600">可选 / Optional</span>
-                  </label>
-                  <input 
-                      type="password"
-                      value={tempConfig.apiKey || ''}
-                      onChange={(e) => {
-                          setTempConfig({...tempConfig, apiKey: e.target.value});
-                          setTestStatus('idle');
-                      }}
-                      placeholder={process.env.API_KEY ? "已使用环境变量 (已隐藏)" : "输入 API Key 以解决 429 错误"}
-                      className="w-full bg-slate-900 border border-slate-700 text-slate-300 rounded p-2 text-sm focus:border-indigo-500 focus:outline-none placeholder-slate-600"
-                  />
-                  <p className="text-[10px] text-slate-500 mt-1">
-                      如果遇到 429 错误，请在此输入新的 API Key。配置将保存在本地浏览器中。
-                  </p>
-               </div>
-
-               <div>
-                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">巡航频率 (ms)</label>
-                 <div className="flex items-center gap-4">
-                   <input 
-                      type="range" 
-                      min="2000" 
-                      max="15000" 
-                      step="500"
-                      value={tempConfig.interval}
-                      onChange={(e) => setTempConfig({...tempConfig, interval: parseInt(e.target.value)})}
-                      className="w-full accent-indigo-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-                   />
-                   <span className="text-sm font-mono text-indigo-400 min-w-[60px]">{tempConfig.interval}ms</span>
-                 </div>
-               </div>
-
-               <div>
-                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">神经核心模型 (AI Model)</label>
-                 <div className="space-y-2">
-                    {!isCustomModel ? (
-                      <select 
-                          value={PRESET_MODELS.some(m => m.value === tempConfig.model) ? tempConfig.model : 'custom'}
-                          onChange={(e) => {
-                            setTestStatus('idle');
-                            if (e.target.value === 'custom') {
-                              setIsCustomModel(true);
-                              setTempConfig({...tempConfig, model: ''});
-                            } else {
-                              setTempConfig({...tempConfig, model: e.target.value});
-                            }
-                          }}
-                          className="w-full bg-slate-950 border border-slate-700 text-slate-300 rounded p-2 text-sm focus:border-indigo-500 focus:outline-none"
-                      >
-                        {PRESET_MODELS.map(model => (
-                          <option key={model.value} value={model.value}>{model.label}</option>
-                        ))}
-                        <option value="custom">+ 自定义 / 本地模型 (Custom/Local)</option>
-                      </select>
+            <div className="flex items-center gap-4">
+                <button 
+                    onClick={() => setShowConfig(true)}
+                    className="p-2 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                    title="配置"
+                >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                </button>
+                <button
+                    onClick={() => setIsRunning(!isRunning)}
+                    className={`px-4 py-1.5 rounded text-sm font-bold flex items-center gap-2 transition-all shadow-lg ${
+                        isRunning 
+                        ? 'bg-red-500/10 text-red-400 border border-red-500/50 hover:bg-red-500/20 shadow-red-500/10' 
+                        : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/50 hover:bg-emerald-500/20 shadow-emerald-500/10'
+                    }`}
+                >
+                    {isRunning ? (
+                        <>
+                            <span className="relative flex h-2 w-2">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                            </span>
+                            STOP SYSTEM
+                        </>
                     ) : (
-                      <div className="flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-200">
-                        <div className="flex gap-2">
+                        <>
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
+                            INITIATE
+                        </>
+                    )}
+                </button>
+            </div>
+        </header>
+
+        {/* Main Content */}
+        <div className="flex-1 p-4 grid grid-cols-12 gap-4 min-h-0 overflow-hidden relative z-0">
+            {/* Left: Agents */}
+            <div className="col-span-3 flex flex-col gap-3 overflow-y-auto pr-1">
+                {agents.map(agent => (
+                    <AgentCard key={agent.id} agent={agent} />
+                ))}
+            </div>
+
+            {/* Middle: Graph & Terminal */}
+            <div className="col-span-6 flex flex-col gap-4 min-h-0">
+                <div className="flex-[2] min-h-0 rounded-lg overflow-hidden border border-slate-800 bg-slate-900/50 relative">
+                     <NetworkGraph data={networkData} />
+                     
+                     {/* Overlay Stats */}
+                     <div className="absolute top-4 right-4 flex flex-col gap-2 pointer-events-none">
+                        <div className="bg-slate-900/80 backdrop-blur border border-slate-700 p-2 rounded text-xs">
+                            <span className="text-slate-500 block mb-1">NODES</span>
+                            <span className="text-slate-200 font-mono text-lg">{networkData.nodes.length}</span>
+                        </div>
+                        <div className="bg-slate-900/80 backdrop-blur border border-slate-700 p-2 rounded text-xs">
+                            <span className="text-slate-500 block mb-1">RISK LEVEL</span>
+                            <span className={`font-mono text-lg ${vulnerabilities.length > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                                {vulnerabilities.length > 0 ? 'CRITICAL' : 'STABLE'}
+                            </span>
+                        </div>
+                     </div>
+                </div>
+                <div className="flex-1 min-h-0">
+                    <Terminal logs={logs} />
+                </div>
+            </div>
+
+            {/* Right: Intelligence */}
+            <div className="col-span-3 flex flex-col gap-4 min-h-0">
+                <div className="flex-1 min-h-0">
+                    <IntelligencePanel 
+                        insight={latestInsight} 
+                        onRemediate={() => {
+                            if (vulnerabilities.length > 0) {
+                                setSelectedVulnerability(vulnerabilities[0]);
+                                setTimeout(() => handleRemediation(), 100);
+                            }
+                        }}
+                        isRemediating={isRemediating}
+                    />
+                </div>
+                
+                {/* Vulnerability List */}
+                <div className="h-1/3 bg-slate-900 rounded-lg border border-slate-800 p-3 flex flex-col">
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center justify-between">
+                        <span>风险态势 (Risk Posture)</span>
+                        <span className="bg-slate-800 text-slate-400 px-1.5 rounded text-[10px]">{vulnerabilities.length}</span>
+                    </h3>
+                    <div className="flex-1 overflow-y-auto space-y-2">
+                        {vulnerabilities.length === 0 ? (
+                            <div className="h-full flex items-center justify-center text-slate-600 text-xs italic">
+                                未发现活跃威胁 (No active threats)
+                            </div>
+                        ) : (
+                            vulnerabilities.map(v => (
+                                <div 
+                                    key={v.id} 
+                                    onClick={() => setSelectedVulnerability(v)}
+                                    className="p-2 bg-slate-950/50 border border-slate-800 rounded hover:border-slate-600 cursor-pointer transition-colors group"
+                                >
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className={`text-xs font-bold ${
+                                            v.severity === 'Critical' ? 'text-red-400' : 
+                                            v.severity === 'High' ? 'text-orange-400' : 'text-yellow-400'
+                                        }`}>{v.name}</span>
+                                        <span className="text-[10px] text-slate-500 group-hover:text-slate-300">{v.severity}</span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 truncate font-mono">
+                                        Host: {v.host}
+                                    </div>
+                                    <div className="hidden group-hover:block text-[10px] text-indigo-400 mt-1">
+                                        点击查看详情 & 处置 &rarr;
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* Status Bar (VS Code Style) */}
+        <footer className="h-6 bg-indigo-950 border-t border-indigo-900 flex items-center justify-between px-3 text-[10px] text-slate-300 select-none shrink-0 z-20">
+            {/* Left Section */}
+            <div className="flex items-center h-full gap-3">
+                <div className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors" title="Remote Connection">
+                    <svg className="w-3 h-3 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                    </svg>
+                    <span className="font-bold text-indigo-100">SENTINEL</span>
+                </div>
+                
+                <div className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors text-slate-400">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                    </svg>
+                    <span>main*</span>
+                </div>
+
+                <div className="flex items-center gap-3 ml-2">
+                    <div className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors" title={`${errorCount} Errors`}>
+                        <svg className="w-3 h-3 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>{errorCount}</span>
+                    </div>
+                    <div className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors" title={`${warningCount} Warnings`}>
+                        <svg className="w-3 h-3 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>{warningCount}</span>
+                    </div>
+                </div>
+            </div>
+
+            {/* Right Section */}
+            <div className="flex items-center h-full gap-4">
+                <div className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors" title="Current OODA Cycle">
+                    <svg className="w-3 h-3 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    <span>Cycle: {cycleCount}</span>
+                </div>
+
+                <div 
+                    onClick={() => setShowConfig(true)}
+                    className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors" 
+                    title="Active Model (Click to Change)"
+                >
+                    <svg className="w-3 h-3 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                    </svg>
+                    <span>{config.model || 'Local Model'}</span>
+                </div>
+
+                <div className="flex items-center gap-1 hover:bg-white/10 px-1 h-full cursor-pointer transition-colors" title="Target Network">
+                     <span className="text-emerald-500">Target:</span>
+                     <span>{config.targetNetwork}</span>
+                </div>
+
+                <div className="hover:bg-white/10 px-2 h-full flex items-center cursor-pointer">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                    </svg>
+                </div>
+            </div>
+        </footer>
+
+        {/* Modals */}
+        <VulnerabilityModal 
+            vulnerability={selectedVulnerability} 
+            onClose={() => setSelectedVulnerability(null)} 
+            onRemediate={handleRemediation}
+            isRemediating={isRemediating}
+        />
+        
+        <VoiceCommander 
+            apiKey={config.apiKey} 
+            vulnerabilities={vulnerabilities}
+            latestInsight={latestInsight}
+            onExecuteRemediation={() => {
+                if (vulnerabilities.length > 0) {
+                    setSelectedVulnerability(vulnerabilities[0]);
+                    setTimeout(() => handleRemediation(), 100);
+                }
+            }}
+        />
+
+        {/* Config Modal */}
+        {showConfig && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-lg shadow-2xl overflow-hidden">
+                    <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
+                        <h3 className="font-bold text-slate-200">System Configuration</h3>
+                        <button onClick={() => setShowConfig(false)} className="text-slate-500 hover:text-white">
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div className="p-6 space-y-4">
+                        <div>
+                            <label className="block text-[10px] text-slate-500 uppercase mb-1">Target Network (CIDR)</label>
                             <input 
-                              type="text"
-                              value={tempConfig.model}
-                              onChange={(e) => {
-                                  setTempConfig({...tempConfig, model: e.target.value});
-                                  setTestStatus('idle');
-                              }}
-                              placeholder="输入模型名称 (e.g. llama3-local)"
-                              className={`w-full bg-slate-950 border text-slate-300 rounded p-2 text-sm focus:outline-none placeholder-slate-600 ${
-                                  testStatus === 'success' ? 'border-emerald-500 focus:border-emerald-500' : 
-                                  testStatus === 'error' ? 'border-red-500 focus:border-red-500' : 
-                                  'border-indigo-500/50 focus:border-indigo-500'
-                              }`}
-                              autoFocus
+                              type="text" 
+                              value={tempConfig.targetNetwork}
+                              onChange={(e) => setTempConfig({...tempConfig, targetNetwork: e.target.value})}
+                              className="w-full bg-slate-950 border border-slate-700 text-slate-300 rounded p-2 text-xs font-mono focus:border-indigo-500 focus:outline-none"
                             />
-                            <button 
-                              onClick={() => {
-                                setIsCustomModel(false);
-                                setTestStatus('idle');
-                                // Revert to default if canceling and value is empty
-                                if (!tempConfig.model) {
-                                    setTempConfig({...tempConfig, model: PRESET_MODELS[0].value});
-                                }
+                        </div>
+                        <div>
+                            <label className="block text-[10px] text-slate-500 uppercase mb-1">Model Selection</label>
+                            <select 
+                              value={isPresetModel(tempConfig.model) ? tempConfig.model : 'custom'}
+                              onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val === 'custom') {
+                                      setTempConfig({...tempConfig, model: ''});
+                                  } else {
+                                      setTempConfig({...tempConfig, model: val});
+                                  }
                               }}
-                              className="px-3 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-800 rounded border border-slate-700 whitespace-nowrap"
+                              className="w-full bg-slate-950 border border-slate-700 text-slate-300 rounded p-2 text-xs font-mono focus:border-indigo-500 focus:outline-none"
                             >
-                              列表
-                            </button>
+                                {PRESET_MODELS.map(m => (
+                                    <option key={m.value} value={m.value}>{m.label}</option>
+                                ))}
+                                <option value="custom">+ 自定义 / 本地模型 (Custom / Local)</option>
+                            </select>
+
+                            {/* Custom Model Input */}
+                            {(!isPresetModel(tempConfig.model)) && (
+                                <div className="mt-2 animate-in fade-in slide-in-from-top-1">
+                                    <input 
+                                      type="text"
+                                      value={tempConfig.model}
+                                      onChange={(e) => setTempConfig({...tempConfig, model: e.target.value})}
+                                      placeholder="输入模型名称 (e.g. llama3, qwen2.5)"
+                                      className="w-full bg-slate-950 border border-indigo-500/50 text-slate-300 rounded p-2 text-xs font-mono focus:border-indigo-500 focus:outline-none placeholder-slate-600"
+                                      autoFocus
+                                    />
+                                    <p className="text-[9px] text-slate-500 mt-1">
+                                        请输入本地模型名称 (如 ollama run llama3 中的 llama3)
+                                    </p>
+                                </div>
+                            )}
                         </div>
                         
                         {/* API Endpoint for Custom Models */}
@@ -403,14 +517,14 @@ const App: React.FC = () => {
                             </p>
                         </div>
 
-                        <div className="flex justify-between items-center mt-2">
+                        <div className="mt-4">
                             <button
                                 onClick={handleTestConnection}
                                 disabled={!tempConfig.model || testStatus === 'testing'}
-                                className={`text-xs px-3 py-1.5 rounded flex items-center gap-2 transition-colors ${
-                                    testStatus === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
-                                    testStatus === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/30' :
-                                    'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-600'
+                                className={`w-full py-2 rounded text-xs flex items-center justify-center gap-2 transition-colors ${
+                                    testStatus === 'testing' 
+                                    ? 'bg-slate-800 text-slate-400 cursor-wait' 
+                                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600'
                                 } disabled:opacity-50 disabled:cursor-not-allowed`}
                             >
                                 {testStatus === 'testing' ? (
@@ -418,298 +532,44 @@ const App: React.FC = () => {
                                         <span className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>
                                         测试连接中...
                                     </>
-                                ) : testStatus === 'success' ? (
-                                    <>
-                                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                        </svg>
-                                        连接成功
-                                    </>
-                                ) : testStatus === 'error' ? (
-                                    <>
-                                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                        </svg>
-                                        连接失败
-                                    </>
                                 ) : (
                                     <>
                                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                                         </svg>
-                                        测试连接
+                                        测试连接 (Test Connection)
                                     </>
                                 )}
                             </button>
+
+                            {/* Test Result Message Below Button */}
+                            {testStatus === 'success' && (
+                                <div className="mt-2 p-2 bg-emerald-500/10 border border-emerald-500/30 rounded text-xs text-emerald-400 flex items-center justify-center gap-2 animate-in fade-in slide-in-from-top-1">
+                                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    连接成功 (Connection Successful)
+                                </div>
+                            )}
+                            
+                            {testStatus === 'error' && (
+                                <div className="mt-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400 flex items-center justify-center gap-2 animate-in fade-in slide-in-from-top-1">
+                                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                    连接失败 (Connection Failed)
+                                </div>
+                            )}
                         </div>
-                      </div>
-                    )}
-                 </div>
-               </div>
 
-               <div>
-                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">目标网段 (Target Scope)</label>
-                 <input 
-                    type="text"
-                    value={tempConfig.targetNetwork}
-                    onChange={(e) => setTempConfig({...tempConfig, targetNetwork: e.target.value})}
-                    className="w-full bg-slate-950 border border-slate-700 text-slate-300 rounded p-2 text-sm font-mono focus:border-indigo-500 focus:outline-none"
-                    placeholder="192.168.1.0/24"
-                 />
-                 <p className="text-[10px] text-slate-600 mt-1">支持 CIDR 格式或 IP 范围描述。</p>
-               </div>
-             </div>
-
-             <div className="mt-8 flex justify-end gap-2 pt-4 border-t border-slate-800">
-               <button 
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="px-4 py-2 text-slate-400 hover:text-white text-sm"
-               >
-                 取消
-               </button>
-               <button 
-                  onClick={saveSettings}
-                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-sm font-medium shadow-lg shadow-indigo-500/20"
-               >
-                 保存配置
-               </button>
-             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Vulnerability Detail Modal */}
-      {selectedVuln && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-           <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-              {/* Modal Header */}
-              <div className="p-4 border-b border-slate-800 flex justify-between items-start bg-slate-950">
-                 <div>
-                    <h3 className="text-xl font-bold text-white flex items-center gap-3">
-                       {selectedVuln.name}
-                    </h3>
-                    <div className="flex gap-2 mt-2">
-                        <span className={`px-2 py-0.5 text-xs font-bold uppercase rounded ${
-                            selectedVuln.severity === 'Critical' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
-                            selectedVuln.severity === 'High' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
-                            selectedVuln.severity === 'Medium' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' :
-                            'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                        }`}>
-                            {selectedVuln.severity} Severity
-                        </span>
-                        <span className="px-2 py-0.5 text-xs font-mono bg-slate-800 text-slate-400 rounded border border-slate-700">
-                           HOST: {selectedVuln.host}
-                        </span>
+                        <div className="pt-4 border-t border-slate-800 flex justify-end gap-3">
+                            <button onClick={() => setShowConfig(false)} className="px-4 py-2 text-xs text-slate-400 hover:text-white">Cancel</button>
+                            <button onClick={saveConfig} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded font-bold shadow-lg shadow-indigo-500/20">Save Configuration</button>
+                        </div>
                     </div>
-                 </div>
-                 <button onClick={() => setSelectedVuln(null)} className="text-slate-500 hover:text-white p-1">
-                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                 </button>
-              </div>
-
-              {/* Modal Body */}
-              <div className="p-6 overflow-y-auto space-y-6">
-                 <div>
-                    <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        问题描述 (Description)
-                    </h4>
-                    <p className="text-slate-300 leading-relaxed text-sm bg-slate-950/50 p-4 rounded border border-slate-800">
-                        {selectedVuln.description}
-                    </p>
-                 </div>
-
-                 <div>
-                    <h4 className="text-sm font-bold text-emerald-500 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        修复建议 (Remediation)
-                    </h4>
-                    <div className="bg-slate-950 p-4 rounded border border-slate-800 font-mono text-xs text-emerald-400/90 overflow-x-auto whitespace-pre-wrap">
-                        {selectedVuln.remediation || "No automated remediation available. Please investigate manually."}
-                    </div>
-                 </div>
-                 
-                 <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
-                    <button onClick={() => setSelectedVuln(null)} className="px-4 py-2 text-sm text-slate-400 hover:text-white transition-colors">
-                        关闭
-                    </button>
-                    <button 
-                        onClick={handleExecuteRemediation}
-                        disabled={isRemediating}
-                        className={`px-4 py-2 text-sm rounded transition-colors flex items-center gap-2 ${
-                            isRemediating
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 cursor-not-allowed'
-                            : 'bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-600/50'
-                        }`}
-                    >
-                        {isRemediating ? '修复中...' : (
-                            <>
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-                                立即处置
-                            </>
-                        )}
-                    </button>
-                 </div>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* Top Navigation / Header */}
-      <header className="h-16 border-b border-slate-800 bg-slate-950/50 backdrop-blur flex items-center justify-between px-6 sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="w-14 h-8 rounded bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center font-bold text-white shadow-lg shadow-purple-500/20">
-            GLA3
-          </div>
-          <h1 className="font-bold text-lg tracking-tight">AIS</h1>
-          <span className="text-xs px-2 py-0.5 rounded border border-slate-700 bg-slate-900 text-slate-400">v2.4.0 (CN)</span>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="flex flex-col items-end mr-4 hidden md:flex">
-             <span className="text-xs text-slate-500 uppercase tracking-widest">系统状态</span>
-             <span className="text-sm font-mono text-emerald-400">安全 // 监控中</span>
-          </div>
-          
-          <button 
-             onClick={openSettings}
-             className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-             title="系统配置"
-          >
-             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-             </svg>
-          </button>
-
-          <button 
-            onClick={togglePatrol}
-            className={`px-6 py-2 rounded font-medium text-sm transition-all duration-300 flex items-center gap-2 shadow-lg ${
-              isPatrolling 
-                ? 'bg-red-500/10 text-red-400 border border-red-500/50 hover:bg-red-500/20' 
-                : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-emerald-500/20'
-            }`}
-          >
-            {isPatrolling ? (
-              <>
-                <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                停止巡航
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                开始巡航
-              </>
-            )}
-          </button>
-        </div>
-      </header>
-
-      {/* Main Content Grid */}
-      <main className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-[1920px] mx-auto w-full">
-        
-        {/* Left Column: Agents & Risk Report (3 cols) */}
-        <div className="lg:col-span-3 flex flex-col gap-6">
-          {/* Agent Squad Section */}
-          <section className="flex flex-col gap-3">
-            <h2 className="text-xs font-bold uppercase text-slate-500 tracking-wider">行动小组</h2>
-            <div className="space-y-3">
-              {agents.map(agent => (
-                <AgentCard key={agent.id} agent={agent} />
-              ))}
+                </div>
             </div>
-          </section>
-
-          {/* Vulnerabilities Section */}
-          <section className="flex flex-col gap-3 flex-1 min-h-[300px]">
-             <h2 className="text-xs font-bold uppercase text-slate-500 tracking-wider">风险态势</h2>
-             <div className="bg-slate-900/50 rounded-lg border border-slate-800 p-4 flex-1 overflow-y-auto max-h-[500px] lg:max-h-[calc(100vh-32rem)] custom-scrollbar">
-                {vulnerabilities.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-slate-600 text-sm flex-col gap-2">
-                    <svg className="w-8 h-8 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>未检测到活跃威胁。</span>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {vulnerabilities.map(vuln => (
-                      <div 
-                        key={vuln.id} 
-                        onClick={() => setSelectedVuln(vuln)}
-                        className="bg-slate-950 border-l-2 border-red-500 p-3 rounded shadow-sm max-h-24 overflow-y-auto cursor-pointer hover:bg-slate-900 hover:border-l-4 transition-all duration-200 group"
-                      >
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="font-bold text-red-400 text-sm group-hover:text-red-300 transition-colors">{vuln.name}</span>
-                          <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded uppercase">{vuln.severity}</span>
-                        </div>
-                        <p className="text-xs text-slate-400 mb-2 leading-relaxed line-clamp-2">
-                            {vuln.description}
-                        </p>
-                        <div className="flex justify-between items-center text-[10px]">
-                            <span className="text-slate-500 font-mono bg-slate-900 px-2 py-1 rounded">
-                                Host: {vuln.host}
-                            </span>
-                            <span className="text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                查看详情 &rarr;
-                            </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-             </div>
-          </section>
-        </div>
-
-        {/* Middle Column: World Model / Map (6 cols) */}
-        <div className="lg:col-span-6 flex flex-col gap-4">
-          <div className="flex justify-between items-center">
-             <h2 className="text-xs font-bold uppercase text-slate-500 tracking-wider">实时网络拓扑</h2>
-             <div className="flex gap-2">
-               <span className="flex items-center gap-1 text-[10px] text-slate-500"><span className="w-2 h-2 rounded-full bg-blue-500"></span>网关</span>
-               <span className="flex items-center gap-1 text-[10px] text-slate-500"><span className="w-2 h-2 rounded-full bg-purple-500"></span>服务器</span>
-               <span className="flex items-center gap-1 text-[10px] text-slate-500"><span className="w-2 h-2 rounded-full bg-pink-500"></span>数据库</span>
-             </div>
-          </div>
-          <div className="flex-1 min-h-[500px] relative">
-            <NetworkGraph data={networkData} />
-            {/* Scan Overlay Effect */}
-            {isPatrolling && (
-               <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-lg">
-                 <div className="w-full h-[2px] bg-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.5)] animate-scan-line"></div>
-               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right Column: AI Intelligence & Terminal (3 cols) */}
-        <div className="lg:col-span-3 flex flex-col gap-6 lg:h-[calc(100vh-8rem)]">
-          {/* Top: AI Intelligence Panel (Approx 35-40%) */}
-          <div className="flex flex-col gap-3 h-[40%] min-h-[220px]">
-             <h2 className="text-xs font-bold uppercase text-slate-500 tracking-wider">智能情报分析</h2>
-             <IntelligencePanel 
-                insight={latestInsight} 
-                onRemediate={handleExecuteRemediation}
-                isRemediating={isRemediating}
-             />
-          </div>
-
-          {/* Bottom: Logs (Remaining space) */}
-          <div className="flex flex-col gap-3 flex-1 min-h-0">
-             <h2 className="text-xs font-bold uppercase text-slate-500 tracking-wider">行动日志</h2>
-             <Terminal logs={logs} />
-          </div>
-        </div>
-
-      </main>
+        )}
     </div>
   );
-};
-
-export default App;
+}

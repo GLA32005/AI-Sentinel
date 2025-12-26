@@ -33,8 +33,8 @@ const getAiClient = (config: AppConfig) => {
   return new GoogleGenAI(options);
 };
 
-// Helper for exponential backoff retry
-const generateContentWithRetry = async (ai: GoogleGenAI, params: any, retries = 3, initialDelay = 2000) => {
+// Helper for exponential backoff retry with increased initial delay
+const generateContentWithRetry = async (ai: GoogleGenAI, params: any, retries = 3, initialDelay = 5000) => {
   for (let i = 0; i < retries; i++) {
     try {
       return await ai.models.generateContent(params);

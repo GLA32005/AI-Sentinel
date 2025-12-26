@@ -212,6 +212,39 @@ const NetworkGraph: React.FC<NetworkGraphProps> = ({ data }) => {
       <div className="absolute top-4 left-4 z-10 bg-slate-950/80 backdrop-blur px-3 py-1 rounded text-xs font-mono text-slate-400 border border-slate-800 pointer-events-none">
         World Model // 网络拓扑
       </div>
+
+      {/* Legend Overlay */}
+      <div className="absolute bottom-4 left-4 z-10 bg-slate-950/90 backdrop-blur border border-slate-800 p-3 rounded-lg text-[10px] font-mono shadow-xl pointer-events-none">
+          <div className="text-slate-500 font-bold mb-2 opacity-70 tracking-wider">LEGEND / 图例</div>
+          <div className="space-y-2">
+             <div className="flex items-center gap-2">
+                 <div className="w-2.5 h-2.5 rounded-full bg-blue-500 border border-blue-400/50"></div>
+                 <span className="text-slate-300">Gateway (网关)</span>
+             </div>
+             <div className="flex items-center gap-2">
+                 <div className="w-2.5 h-2.5 rounded-full bg-purple-500 border border-purple-400/50"></div>
+                 <span className="text-slate-300">Server (服务器)</span>
+             </div>
+             <div className="flex items-center gap-2">
+                 <div className="w-2.5 h-2.5 rounded-full bg-pink-500 border border-pink-400/50"></div>
+                 <span className="text-slate-300">Database (数据库)</span>
+             </div>
+             <div className="flex items-center gap-2">
+                 <div className="w-2.5 h-2.5 rounded-full bg-slate-400 border border-slate-300/50"></div>
+                 <span className="text-slate-300">Workstation (终端)</span>
+             </div>
+             <div className="h-px bg-slate-800 my-1"></div>
+             <div className="flex items-center gap-2">
+                 <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/20 border border-emerald-500"></div>
+                 <span className="text-emerald-400">Secure (安全)</span>
+             </div>
+             <div className="flex items-center gap-2">
+                 <div className="w-2.5 h-2.5 rounded-full bg-amber-500/20 border border-amber-500 animate-pulse"></div>
+                 <span className="text-amber-400">Vulnerable (风险)</span>
+             </div>
+          </div>
+      </div>
+
       <svg ref={svgRef} className="w-full h-full cursor-grab active:cursor-grabbing"></svg>
 
       {/* Node Details Info Box */}

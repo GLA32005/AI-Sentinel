@@ -4,6 +4,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Version](https://img.shields.io/badge/version-2.4.0-green)
+![Docker](https://img.shields.io/badge/docker-ready-blue)
 
 ## 核心功能
 
@@ -15,21 +16,58 @@
 
 ---
 
-## 🚀 本地部署指南
+## 🐳 Docker 部署指南 (推荐)
+
+使用 Docker 可以快速构建并运行一个生产就绪的容器化环境。
+
+### 1. 构建镜像
+
+在项目根目录下运行：
+
+```bash
+docker build -t ai-sentinel .
+```
+
+### 2. 运行容器
+
+```bash
+docker run -d -p 8080:80 --name ai-sentinel ai-sentinel
+```
+
+访问浏览器 `http://localhost:8080` 即可使用。
+
+### 3. (可选) 注入 API Key
+
+如果你希望通过环境变量注入 Google API Key（虽然应用内也支持在 UI 中配置）：
+
+```bash
+docker run -d -p 8080:80 -e API_KEY="your-google-api-key" --name ai-sentinel ai-sentinel
+```
+
+---
+
+## 🚀 本地开发指南
 
 你可以通过以下两种方式在本地运行本项目：
 
-### 方式一：快速启动 (无需安装 Node.js 依赖)
+### 方式一：Node.js 开发模式
 
-本项目采用现代 ES Module 架构，可直接在浏览器中运行，只需一个静态文件服务器。
+如果你想修改代码，推荐使用 Node.js 环境：
 
-1.  **下载代码**: 将所有项目文件保存到本地文件夹。
-2.  **启动服务**: 在该文件夹下启动一个 HTTP 服务器。
+1.  **安装依赖**: `npm install`
+2.  **启动开发服**: `npm run dev`
+3.  **构建生产版**: `npm run build`
+
+### 方式二：快速启动 (无需安装依赖)
+
+本项目采用现代 ES Module 架构，也可直接在支持的环境中运行（但 Docker 方式更稳定）。
+
+1.  **启动服务**: 在文件夹下启动一个 HTTP 服务器。
     *   **Python 3**: `python3 -m http.server 8000`
     *   **Node.js**: `npx http-server`
-3.  **访问**: 打开浏览器访问 `http://localhost:8000`。
+2.  **访问**: 打开浏览器访问 `http://localhost:8000`。
 
-### 方式二：对接本地大模型 (Ollama)
+### 对接本地大模型 (Ollama)
 
 你可以使用本地的 Llama 3 或其他模型来代替 Google Gemini，完全保护隐私且无 Rate Limit 限制。
 
@@ -42,7 +80,6 @@
     *   **模型名称**: 输入 `llama3` (需与 Ollama 中一致)。
     *   **服务地址**: 输入 `http://localhost:11434/v1beta` (注意：Ollama 默认是 11434，Gemini SDK 需要 `/v1beta` 或兼容路径，或者使用 LiteLLM 转发)。
         *   *注意*: 原生 Ollama API 可能需要一个转换层来适配 Google GenAI SDK 格式，推荐使用 `Gemini` API Key 以获得最佳体验。
-        *   或者，如果你有兼容 OpenAI 格式的本地服务，可修改代码适配。本系统默认深度集成 Google GenAI SDK。
 
 ---
 
@@ -65,6 +102,9 @@
 
 ```
 .
+├── Dockerfile           # Docker 构建文件
+├── package.json         # 依赖管理
+├── vite.config.ts       # 构建配置
 ├── index.html           # 入口文件
 ├── index.tsx            # React 挂载点
 ├── App.tsx              # 主应用逻辑 & OODA 循环控制器
@@ -84,6 +124,8 @@
 ## 技术栈
 
 *   **React 19**: 核心 UI 框架。
+*   **Vite**: 构建工具。
+*   **Docker**: 容器化部署。
 *   **Tailwind CSS**: 样式与动画。
 *   **D3.js**: 数据可视化与物理仿真。
 *   **Google GenAI SDK**: 多模态大模型驱动。
