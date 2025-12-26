@@ -222,7 +222,7 @@ export default function App() {
                 <div className="flex items-center gap-2">
                     <div className="w-3 h-3 bg-indigo-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(99,102,241,0.5)]"></div>
                     <h1 className="font-bold tracking-wider text-lg bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
-                        NEURAL SENTINEL <span className="text-slate-600 text-xs font-mono ml-2">v2.0.4</span>
+                        GLA3-NEURAL SENTINEL <span className="text-slate-600 text-xs font-mono ml-2">v2.0.4</span>
                     </h1>
                 </div>
                 {/* Target Info Removed */}
