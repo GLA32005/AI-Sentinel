@@ -26,7 +26,7 @@ export interface Agent {
 export interface LogEntry {
   id: string;
   timestamp: string;
-  agentRole: AgentRole;
+  agentRole: AgentRole | 'USER';
   message: string;
   type: 'info' | 'warning' | 'danger' | 'success';
   details?: string;

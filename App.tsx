@@ -164,12 +164,108 @@ export default function App() {
       setShowConfig(false);
   };
 
+  // --- Core Action Logic (Reusable) ---
+
+  const addLog = (role: AgentRole, message: string, type: LogEntry['type'] = 'info') => {
+      setLogs(prev => [...prev, {
+          id: Date.now().toString(),
+          timestamp: new Date().toLocaleTimeString(),
+          agentRole: role,
+          message,
+          type
+      }]);
+  };
+
+  const execScan = (target: string) => {
+      const msg = `已收到指令。正在覆写任务队列... 对目标 [${target}] 发起深度指纹识别扫描。预计耗时 1500ms。`;
+      addLog(AgentRole.SCOUT, msg, 'success');
+      setAgents(prev => prev.map(a => a.role === AgentRole.SCOUT ? { ...a, status: AgentStatus.ACTING, currentTask: `手动扫描: ${target}` } : a));
+  };
+
+  const execIsolate = (targetLabel: string) => {
+      const targetNode = networkData.nodes.find(n => n.label.toLowerCase() === targetLabel.toLowerCase());
+      if (targetNode) {
+          setNetworkData(prev => ({
+              ...prev,
+              links: prev.links.filter(l => {
+                  const sourceId = typeof l.source === 'object' ? (l.source as any).id : l.source;
+                  const targetId = typeof l.target === 'object' ? (l.target as any).id : l.target;
+                  return sourceId !== targetNode.id && targetId !== targetNode.id;
+              }),
+              nodes: prev.nodes.map(n => n.id === targetNode.id ? { ...n, status: 'compromised', riskScore: 0 } : n)
+          }));
+          addLog(AgentRole.COMMANDER, `执行协议 99: 主机 [${targetNode.label}] 已被物理隔离。所有入站/出站连接已切断。`, 'warning');
+      } else {
+          addLog(AgentRole.COMMANDER, `错误: 未找到主机 [${targetLabel}]。`, 'danger');
+      }
+  };
+
+  const execRemediate = (targetLabel: string) => {
+      const vulns = vulnerabilities.filter(v => v.host.toLowerCase().includes(targetLabel.toLowerCase()));
+      if (vulns.length > 0) {
+          setSelectedVulnerability(vulns[0]);
+          setTimeout(() => handleRemediation(), 500);
+          addLog(AgentRole.SNIPER, `已授权对 [${targetLabel}] 的自动化修复。Sniper Agent正在介入...`, 'success');
+      } else {
+          // If no vulns found, check if node exists
+          const node = networkData.nodes.find(n => n.label.toLowerCase() === targetLabel.toLowerCase());
+          if (node) {
+               addLog(AgentRole.SNIPER, `主机 [${targetLabel}] 上未发现活跃漏洞，但在执行预防性加固脚本...`, 'info');
+               setTimeout(() => {
+                   addLog(AgentRole.SNIPER, `主机 [${targetLabel}] 加固完成。`, 'success');
+               }, 1000);
+          } else {
+               addLog(AgentRole.SNIPER, `主机 [${targetLabel}] 未找到。`, 'danger');
+          }
+      }
+  };
+
+
+  // --- CLI Command Handler ---
+  const handleTerminalCommand = (cmdStr: string) => {
+      const parts = cmdStr.trim().split(' ');
+      const command = parts[0].toLowerCase();
+      const arg = parts[1];
+
+      setLogs(prev => [...prev, {
+          id: Date.now().toString(),
+          timestamp: new Date().toLocaleTimeString(),
+          agentRole: 'USER' as any,
+          message: cmdStr,
+          type: 'info'
+      }]);
+
+      switch (command) {
+          case '/help':
+              addLog(AgentRole.COMMANDER, `可用指令列表:\n/scan [target]\n/isolate [host]\n/remediate [host]\n/status\n/clear`);
+              break;
+          case '/clear':
+              setLogs([]);
+              break;
+          case '/status':
+              addLog(AgentRole.COMMANDER, `系统运行报告:\nCycle: ${cycleCount}\nNodes: ${networkData.nodes.length}\nVulns: ${vulnerabilities.length}`);
+              break;
+          case '/scan':
+              execScan(arg || config.targetNetwork);
+              break;
+          case '/isolate':
+              if (!arg) addLog(AgentRole.COMMANDER, "错误: 请指定主机名", 'danger');
+              else execIsolate(arg);
+              break;
+          case '/remediate':
+              if (!arg) addLog(AgentRole.SNIPER, "错误: 请指定主机名", 'danger');
+              else execRemediate(arg);
+              break;
+          default:
+              addLog(AgentRole.COMMANDER, `指令无法识别: ${command}`, 'danger');
+      }
+  };
+
   const handleRemediation = async () => {
       if (!selectedVulnerability) return;
 
       setIsRemediating(true);
       
-      // Log initiation
       setLogs(prev => [...prev, {
           id: Date.now().toString(),
           timestamp: new Date().toLocaleTimeString(),
@@ -178,14 +274,10 @@ export default function App() {
           type: 'warning'
       }]);
 
-      // Simulate remediation delay
       await new Promise(r => setTimeout(r, 2000));
       
-      // Remove specifically the selected vulnerability
       setVulnerabilities(prev => {
           const remaining = prev.filter(v => v.id !== selectedVulnerability.id);
-          
-          // If no vulnerabilities left, reset network visual status
           if (remaining.length === 0) {
              setLatestInsight(null);
              setNetworkData(data => ({
@@ -225,7 +317,6 @@ export default function App() {
                         GLA3-NEURAL SENTINEL <span className="text-slate-600 text-xs font-mono ml-2">v2.0.4</span>
                     </h1>
                 </div>
-                {/* Target Info Removed */}
             </div>
 
             <div className="flex items-center gap-4">
@@ -257,7 +348,7 @@ export default function App() {
                         </>
                     ) : (
                         <>
-                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
                             INITIATE
                         </>
                     )}
@@ -277,7 +368,12 @@ export default function App() {
             {/* Middle: Graph & Terminal */}
             <div className="col-span-6 flex flex-col gap-4 min-h-0">
                 <div className="flex-[2] min-h-0 rounded-lg overflow-hidden border border-slate-800 bg-slate-900/50 relative">
-                     <NetworkGraph data={networkData} />
+                     <NetworkGraph 
+                        data={networkData} 
+                        onScanNode={execScan}
+                        onIsolateNode={execIsolate}
+                        onRemediateNode={execRemediate}
+                     />
                      
                      {/* Overlay Stats */}
                      <div className="absolute top-4 right-4 flex flex-col gap-2 pointer-events-none">
@@ -294,7 +390,7 @@ export default function App() {
                      </div>
                 </div>
                 <div className="flex-1 min-h-0">
-                    <Terminal logs={logs} />
+                    <Terminal logs={logs} onCommand={handleTerminalCommand} />
                 </div>
             </div>
 
